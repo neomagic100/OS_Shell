@@ -269,12 +269,18 @@ string getInput();
 bool executeCommand(Command cmd);
 void start(Command cmd);
 int background(Command cmd);
+bool moveToDir(Command cmd);
 void freeArgs(char** args, int argsn);
+void dalek(Command cmd);
+int findChildPid(int pid);
+void dalekall();
+void repeat(Command cmd);
 
 // Global variables
 Command_Stack history; // History command stack
 string currentdir;	   // The current working directory path
 int status;			   // The status of the program - 1: Run, 0: End
+vector<int> child_pids{};
 
 int main() {
 
@@ -321,6 +327,7 @@ void run_sh() {
     }
 }
 
+
 // Execute a given command from the shell based on its command number
 // Input: Command cmd - The Command to execute
 // Output: bool - True: Command was executed successfully
@@ -330,9 +337,12 @@ bool executeCommand(Command cmd) {
 
 	switch(c) {
 		case movetodir_sym: // Move to given directory
+			moveToDir(cmd);
 			break;
 		case whereami_sym:  // Print out current director
+			currentdir = get_current_dir_name();
 			cout << currentdir << endl;
+			
 			break;
 		case history_sym:   // Print out the current history stack
 			if (cmd.numTokens == 1)
@@ -352,12 +362,16 @@ bool executeCommand(Command cmd) {
 			start(cmd);
 			break;
 		case background_sym:// Start a program (with arguments), do not wait for it to finish
+			background(cmd);
 			break;
 		case dalek_sym:		// End a process based on its pid
+			dalek(cmd);
 			break;
 		case repeat_sym:	// Repeat a given command a given number of times
+			repeat(cmd);
 			break;
 		case dalekall_sym:  // End all processes currently running in shell
+			dalekall();
 			break;
 		default:
 			return false;
@@ -366,7 +380,82 @@ bool executeCommand(Command cmd) {
 	return true;
 }
 
-// Run given command in shell. To run program, precede program with ./
+// Repeat creating a background process a given number of times
+void repeat(Command cmd) {
+	const string BACKGROUND = "background";
+	int nTimes = stoi(cmd.args[0]);
+	
+	string args = "";
+	int numArgs = cmd.args.size();
+
+	for (int i = 2; i < numArgs; i++)
+		args += args[i] + " ";
+	string cmdStr = BACKGROUND + " " + args;
+	Command* rptCmd = new Command(cmdStr);
+	int *pids = new int[nTimes];
+
+	for (int i = 0; i < nTimes; i++) 
+		pids[i] = background(*rptCmd);
+
+}
+
+// Terminate a process
+// Input: Command cmd - The current Command
+void dalek(Command cmd) {
+	int pidToKill = stoi(cmd.args[0]);
+
+	// Send signal to terminate process
+	kill(pidToKill, SIGTERM);
+
+	// Remove pid from vector of child processes running
+	vector<int>::iterator it;
+	int idx = findChildPid(pidToKill);
+	int i = 0;
+	for (it = child_pids.begin(); it != child_pids.end(); it++, i++) {
+		if (i == idx) {
+			child_pids.erase(it);
+			break;
+		}
+	}
+
+	if (idx < 0)
+		cout << "Could not terminate PID: " << pidToKill;
+}
+
+// Terminate all child processes currently running
+void dalekall() {
+	int size = child_pids.size();
+	int* pids = new int[size];
+	for (int i = 0; i < size; i++) {
+		kill(child_pids[i], SIGTERM);
+		pids[i] = child_pids[i];
+	}
+	
+	child_pids.clear();
+
+	cout << "Exterminating " << size << " processes:";
+	for (int i = 0; i < size; i++)
+		cout << " " << pids[i];
+	cout << endl;
+
+	delete(pids);
+}
+
+// Find a process id in vector of child processes
+// Output: index of the pid, or -1 if not found
+int findChildPid(int pid) {
+	int numChildren = child_pids.size();
+	int i;
+	for (i = 0; i < numChildren; i++) {
+		if (child_pids[i] == pid)
+			break;
+	}
+
+	return (i < numChildren) ? i : -1;
+}
+
+// Start given process in shell. To run program, precede program with ./
+// Wait until it finishes to resume shell
 // Input: Command cmd - The current Command
 void start(Command cmd) {
 	int numArgs = cmd.args.size();
@@ -398,7 +487,92 @@ void start(Command cmd) {
         waitpid(c_pid, &stat, 0);
 		freeArgs(args, numArgs);
     }
-    
+}
+
+
+// Start given process in shell. To run program, precede program with ./
+// Do not wait until it finishes to resume shell
+// Input: Command cmd - The current Command
+// Output: the pid of the child process
+int background(Command cmd) {
+	int numArgs = cmd.args.size();
+  	char* args[numArgs];
+	
+	// Convert the Command arguments into a null terminated array of char pointers
+	for (int i = 0; i < numArgs; i++)
+		args[i] = strdup((cmd.args[i].c_str()));
+	args[numArgs] = NULL;
+	
+	int stat;
+
+	// Create a new process, add it to child processes, and print to console
+   	pid_t c_pid = fork();
+	if (c_pid > 0) {
+		child_pids.push_back(c_pid);
+		cout << "PID: " << c_pid << endl;
+	}
+	
+	// Fork did not execute
+    if (c_pid == -1) {
+        printf("  Failed forking child...\n");
+    }
+
+	// Parent process executes program
+    else if (c_pid == 0) {
+		// Execute the program and arguments
+        if (execvp(args[0], args) < 0) {
+            cout << "  Could not open: " << args[0] << endl;
+			freeArgs(args, numArgs);
+			exit(0); // exit the current process
+        }
+    }
+
+	// Child process action after execute
+    else {
+		// Wait until the current child process is completed
+        waitpid(c_pid, &stat, WNOHANG);
+		freeArgs(args, numArgs);
+    }
+
+	return c_pid;
+}
+
+// Move to the new specified directory
+// Input: Command cmd - Command containing movetodir
+// Output: bool - True: Successfully changed directores
+bool moveToDir(Command cmd) {
+	DIR* dir;
+	struct dirent *entry;
+	int count;
+	char path[BUFFER_MAX];
+	char* arg = strdup(cmd.args[0].c_str());
+	if ((chdir(arg)) != 0) 
+	{
+		cout << "Directory " << arg << ": not found" << endl;
+		return false;
+	}
+	else {
+		return true;
+	}
+	if ((dir = opendir(arg)) == NULL) {
+		cout << "Directory " << arg << ": not found" << endl;
+		return false;
+	}
+	else {
+		while((entry = readdir(dir)) != NULL) {
+			if (entry->d_name[0] != '.') {
+				strcpy(path, arg);
+				strcat(path, "/");
+				strcat(path, entry->d_name);
+			}
+		}
+		
+		cout << get_current_dir_name() << endl;
+
+		closedir(dir);
+	}
+
+	return true;
 }
 
 // Delete tokens created to run process
