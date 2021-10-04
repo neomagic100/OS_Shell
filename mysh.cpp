@@ -26,6 +26,7 @@
 #include <cstdio>
 
 #define BUFFER_MAX 1024
+#define OUT_INDENT "  "
 
 using namespace std;
 
@@ -95,24 +96,13 @@ class Command {
 	// Test if the command is a valid recognized command
 	// Output: bool - True: is valid
 	bool validCmd() {
-		return (commandNum >= 0);
+		return (commandNum >= 0 && hasCorrectNumArgs());
 	}
 	
 	// Test if the command has arguments
 	// Output: bool - True: has arguments
 	bool hasArgs() {
 		return !args.empty();
-	}
-	
-	// Test if the argument has a given string
-	// Input: String arg - a string 
-	// Output: bool - True: is in arg
-	bool argsHas(string arg) {
-		int len = args.size();
-		for (int i = 0; i < len; i++) {
-			if (args[i] == arg)
-				return true;
-		}
 	}
 	
 	// Test if the first argument is a given string
@@ -140,6 +130,37 @@ class Command {
 		for (int i = 1; i < numTokens; i++)
 			args.insert(args.end(), tokenized[i]);
 	}
+
+	// Check if the command has the correct number of arguments
+	// Return: bool - True: has correct number of arguments
+	bool hasCorrectNumArgs() {
+		int numArgs = args.size();
+
+		switch(commandNum) {
+			case movetodir_sym: // Move to given directory
+				return (numArgs == 1);
+			case whereami_sym:  // Print out current director
+				return (numArgs == 0);
+			case history_sym:   // Print out the current history stack
+				return (numArgs == 0 || numArgs == 1);
+			case byebye_sym:    // Set status to 0 and leave program
+				return (numArgs == 0);
+			case replay_sym:    // Replay a given Command from the history stack
+				return (numArgs == 1);
+			case start_sym:     // Start a program (with arguments), wait until it finishes
+				return (numArgs >= 1);
+			case background_sym:// Start a program (with arguments), do not wait for it to finish
+				return (numArgs >= 1);
+			case dalek_sym:		// End a process based on its pid
+				return (numArgs == 1);
+			case repeat_sym:	// Repeat a given command a given number of times
+				return (numArgs >= 2);
+			case dalekall_sym:  // End all processes currently running in shell
+				return (numArgs == 0);
+			default:
+				return false;
+		}
+	}
 };
 
 /*
@@ -159,10 +180,10 @@ class Command_Stack {
 		int iter = 0;
 		int size = historyStack.size();
 		if (size == 0) return;
-		cout << "History:" << endl;
+		cout << OUT_INDENT << "History:" << endl;
 		for (it = historyStack.begin(); it != historyStack.end(); it++) {
 			it->replayNum = iter;
-			cout << iter << ": " << it->cmdInput << endl;
+			cout << OUT_INDENT << iter << ": " << it->cmdInput << endl;
 			iter++;
 		}
 	}
@@ -178,7 +199,7 @@ class Command_Stack {
 			int replayArg = stoi(cmd.args[0]);
 			if (replayArg == it->replayNum) {
 				if (it->commandNum == replay_sym) {
-					cout << "Invalid Command: " << cmd.command << " " << it->cmdInput << endl;
+					cout << OUT_INDENT << "Invalid Command: " << cmd.command << " " << it->cmdInput << endl;
 					break;
 				}
 				return *it;
@@ -241,7 +262,7 @@ class Command_Stack {
 		while (!historyStack.empty())
 			historyStack.pop_front();
 		remove(filename.c_str());
-		cout << "History Cleared" << endl;
+		cout << OUT_INDENT << "History Cleared" << endl;
 	}
 
 	// Push a command onto the history stack
@@ -277,13 +298,12 @@ void dalekall();
 void repeat(Command cmd);
 
 // Global variables
-Command_Stack history; // History command stack
-string currentdir;	   // The current working directory path
-int status;			   // The status of the program - 1: Run, 0: End
-vector<int> child_pids{};
+Command_Stack history;   // History command stack
+string currentdir;	     // The current working directory path
+int status;			     // The status of the program - 1: Run, 0: End
+vector<int> child_pids{};// The pids of the child processes currently running
 
 int main() {
-
 	status = 1; // Set status to run (1)
 
 	// Get command history from file mysh_history.txt
@@ -323,7 +343,7 @@ void run_sh() {
         else if (cmd.commandNum == byebye_sym) // status is now 0
             break;
         else								   // the command input is not recognized
-			cout << "Invalid command: "<< cmd.cmdInput << endl;
+			cout << OUT_INDENT << "Invalid command: "<< cmd.cmdInput << endl;
     }
 }
 
@@ -332,8 +352,10 @@ void run_sh() {
 // Input: Command cmd - The Command to execute
 // Output: bool - True: Command was executed successfully
 bool executeCommand(Command cmd) {
-	pid_t pid;
 	int c = cmd.commandNum;
+
+	// If command not valid, do not try to execute
+	if (!cmd.validCmd()) return false;
 
 	switch(c) {
 		case movetodir_sym: // Move to given directory
@@ -341,7 +363,7 @@ bool executeCommand(Command cmd) {
 			break;
 		case whereami_sym:  // Print out current director
 			currentdir = get_current_dir_name();
-			cout << currentdir << endl;
+			cout << OUT_INDENT << currentdir << endl;
 			
 			break;
 		case history_sym:   // Print out the current history stack
@@ -381,6 +403,7 @@ bool executeCommand(Command cmd) {
 }
 
 // Repeat creating a background process a given number of times
+// Input: Command cmd - Command to repeat
 void repeat(Command cmd) {
 	const string BACKGROUND = "background";
 	int nTimes = stoi(cmd.args[0]);
@@ -388,25 +411,43 @@ void repeat(Command cmd) {
 	string args = "";
 	int numArgs = cmd.args.size();
 
-	for (int i = 2; i < numArgs; i++)
-		args += args[i] + " ";
+	// Create a string with the input of the command to repeat
+	for (int i = 1; i < numArgs; i++)
+		args += cmd.args[i] + " ";
 	string cmdStr = BACKGROUND + " " + args;
+	
+	// Create a command from that string
 	Command* rptCmd = new Command(cmdStr);
+
+	// Make sure newly created command is valid
+	if (!rptCmd->validCmd()) {
+		cout << OUT_INDENT << "Invalid Command: " << cmd.cmdInput << endl;
+		return;
+	}
+
+	// Store each new process' PID
 	int *pids = new int[nTimes];
 
 	for (int i = 0; i < nTimes; i++) 
 		pids[i] = background(*rptCmd);
 
+	delete(rptCmd);
+	delete(pids);
 }
 
 // Terminate a process
 // Input: Command cmd - The current Command
 void dalek(Command cmd) {
 	int pidToKill = stoi(cmd.args[0]);
+	int stat;
+	
+	// System call to tell child to wait to prevent it becoming zombie
+	waitpid(pidToKill, &stat, WNOHANG);
 
 	// Send signal to terminate process
 	kill(pidToKill, SIGTERM);
-
+	WIFSIGNALED(stat);
+	
 	// Remove pid from vector of child processes running
 	vector<int>::iterator it;
 	int idx = findChildPid(pidToKill);
@@ -419,7 +460,7 @@ void dalek(Command cmd) {
 	}
 
 	if (idx < 0)
-		cout << "Could not terminate PID: " << pidToKill;
+		cout << OUT_INDENT << "Could not terminate PID: " << pidToKill << endl;
 }
 
 // Terminate all child processes currently running
@@ -433,7 +474,7 @@ void dalekall() {
 	
 	child_pids.clear();
 
-	cout << "Exterminating " << size << " processes:";
+	cout << OUT_INDENT << "Exterminating " << size << " processes:";
 	for (int i = 0; i < size; i++)
 		cout << " " << pids[i];
 	cout << endl;
@@ -472,12 +513,12 @@ void start(Command cmd) {
    	pid_t c_pid = fork();
 
     if (c_pid == -1) {
-        printf("  Failed forking child...\n");
+        cout << OUT_INDENT << "Failed forking child.." << endl;
     }
     else if (c_pid == 0) {
 		// Execute the program and arguments
         if (execvp(args[0], args) < 0) {
-            cout << "  Could not open: " << args[0] << endl;
+            cout << OUT_INDENT << "Could not open: " << args[0] << endl;
 			freeArgs(args, numArgs);
 			exit(0); // exit the current process
         }
@@ -509,19 +550,19 @@ int background(Command cmd) {
    	pid_t c_pid = fork();
 	if (c_pid > 0) {
 		child_pids.push_back(c_pid);
-		cout << "PID: " << c_pid << endl;
+		cout << OUT_INDENT << "PID: " << c_pid << endl;
 	}
 	
 	// Fork did not execute
     if (c_pid == -1) {
-        printf("  Failed forking child...\n");
+        cout << OUT_INDENT << "Failed forking child.." << endl;
     }
 
 	// Parent process executes program
     else if (c_pid == 0) {
 		// Execute the program and arguments
         if (execvp(args[0], args) < 0) {
-            cout << "  Could not open: " << args[0] << endl;
+            cout << "Could not open: " << args[0] << endl;
 			freeArgs(args, numArgs);
 			exit(0); // exit the current process
         }
@@ -529,7 +570,8 @@ int background(Command cmd) {
 
 	// Child process action after execute
     else {
-		// Wait until the current child process is completed
+		// Semd signal to parent that child is still running
+		signal(SIGCHLD,SIG_IGN);
         waitpid(c_pid, &stat, WNOHANG);
 		freeArgs(args, numArgs);
     }
@@ -548,14 +590,14 @@ bool moveToDir(Command cmd) {
 	char* arg = strdup(cmd.args[0].c_str());
 	if ((chdir(arg)) != 0) 
 	{
-		cout << "Directory " << arg << ": not found" << endl;
+		cout << OUT_INDENT << "Directory " << arg << ": not found" << endl;
 		return false;
 	}
 	else {
 		return true;
 	}
 	if ((dir = opendir(arg)) == NULL) {
-		cout << "Directory " << arg << ": not found" << endl;
+		cout << OUT_INDENT << "Directory " << arg << ": not found" << endl;
 		return false;
 	}
 	else {
@@ -567,7 +609,7 @@ bool moveToDir(Command cmd) {
 			}
 		}
 		
-		cout << get_current_dir_name() << endl;
+		cout << OUT_INDENT << get_current_dir_name() << endl;
 
 		closedir(dir);
 	}
@@ -592,7 +634,7 @@ void freeArgs(char** args, int argsn) {
 // Get input from the shell console
 // Output: string - the line read
 string getInput() {
-	// Use a buffer to prevent an overly large input
+	// Use a buffer to prevent overly large input
 	char buffer[BUFFER_MAX];
 	
 	cout << "# ";
