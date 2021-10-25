@@ -1,7 +1,7 @@
 /* mysh.cpp - Shell program to execute a specific set of commands
  * 
  * Created by: Michael Bernhardt
- * Last updated: Oct 3, 2021
+ * Last updated: Oct 25, 2021
  * 
  * To compile - in bash shell, enter the following:
  * 			 g++ mysh.cpp -o mysh
@@ -43,11 +43,11 @@ class Command {
 
 	const vector<string> KEYWORDS = {"movetodir", "whereami", "history", "byebye", "replay", "start",
 							"background", "dalek", "repeat", "dalekall"};
-	string cmdInput;
-	string command;
-	vector<string> tokenized{};
-	vector<string> args{};
-	int numTokens, replayNum, commandNum;
+	string cmdInput;						// Input string from user
+	string command;							// command string part of input
+	vector<string> tokenized{};				// vector of strings of tokenized input
+	vector<string> args{};					// vector of strings of args
+	int numTokens, replayNum, commandNum;    
 	
 
 	// Constructor
@@ -59,6 +59,12 @@ class Command {
 		command = tokenized[0];
 		getCommandNum();
 		getArgs();
+	}
+
+	// Destructor
+	~Command() {
+		tokenized.clear();
+		args.clear();
 	}
 
 	void printHistory(vector<Command>);
@@ -173,6 +179,14 @@ class Command_Stack {
 	string filename = "mysh_history.txt";
 
 	public:
+
+	// Using default Constructor
+	Command_Stack(){}
+
+	// Destructor
+	~Command_Stack() {
+		historyStack.clear();
+	}
 
 	// Print the current history stack to the console while setting the replay numbers for each command
 	void printHistory() {
@@ -290,21 +304,28 @@ string getInput();
 bool executeCommand(Command cmd);
 void start(Command cmd);
 int background(Command cmd);
+void whereami();
 bool moveToDir(Command cmd);
 void freeArgs(char** args, int argsn);
 void dalek(Command cmd);
 int findChildPid(int pid);
 void dalekall();
 void repeat(Command cmd);
+void introMessage();
+bool getHelp(Command cmd);
 
 // Global variables
 Command_Stack history;   // History command stack
 string currentdir;	     // The current working directory path
 int status;			     // The status of the program - 1: Run, 0: End
 vector<int> child_pids{};// The pids of the child processes currently running
+DIR* dir;
+struct dirent *entry;
 
 int main() {
 	status = 1; // Set status to run (1)
+
+	introMessage();
 
 	// Get command history from file mysh_history.txt
 	history.readFromFile();
@@ -321,6 +342,7 @@ int main() {
 void run_sh() {
 	// Get the current directory
 	currentdir = get_current_dir_name();
+	currentdir += "/";
 
 	string inputString;
 
@@ -328,7 +350,10 @@ void run_sh() {
 	while (status) {
 		// Get the input from the shell console and make it a Command
 		inputString = getInput();
-        Command cmd(inputString);
+		Command cmd(inputString);
+
+		// If help entered, list commands and continue loop
+		if (getHelp(cmd)) continue;
 		
 		// If the command is valid, execute it
         bool validCmd = executeCommand(cmd);
@@ -362,9 +387,7 @@ bool executeCommand(Command cmd) {
 			moveToDir(cmd);
 			break;
 		case whereami_sym:  // Print out current director
-			currentdir = get_current_dir_name();
-			cout << OUT_INDENT << currentdir << endl;
-			
+			whereami();
 			break;
 		case history_sym:   // Print out the current history stack
 			if (cmd.numTokens == 1)
@@ -501,12 +524,20 @@ int findChildPid(int pid) {
 void start(Command cmd) {
 	int numArgs = cmd.args.size();
   	char* args[numArgs];
+	string programPath;
 	
 	// Convert the Command arguments into a null terminated array of char pointers
 	for (int i = 0; i < numArgs; i++)
 		args[i] = strdup((cmd.args[i].c_str()));
 	args[numArgs] = NULL;
-	
+
+	// If multiple args, assume local directory
+	// If one arg, add currentdir for absolute path name
+	if (numArgs == 1)
+		programPath = currentdir + args[0];
+	else
+		programPath = args[0];
+		
 	int stat;
 
 	// Create a new process
@@ -517,7 +548,7 @@ void start(Command cmd) {
     }
     else if (c_pid == 0) {
 		// Execute the program and arguments
-        if (execvp(args[0], args) < 0) {
+        if (execvp(programPath.c_str(), args) < 0) {
             cout << OUT_INDENT << "Could not open: " << args[0] << endl;
 			freeArgs(args, numArgs);
 			exit(0); // exit the current process
@@ -579,40 +610,56 @@ int background(Command cmd) {
 	return c_pid;
 }
 
+// Get current location in directory
+void whereami() {
+	cout << currentdir << endl;
+}
+
 // Move to the new specified directory
 // Input: Command cmd - Command containing movetodir
 // Output: bool - True: Successfully changed directores
 bool moveToDir(Command cmd) {
-	DIR* dir;
-	struct dirent *entry;
+	
 	int count;
 	char path[BUFFER_MAX];
 	char* arg = strdup(cmd.args[0].c_str());
-	if ((chdir(arg)) != 0) 
-	{
-		cout << OUT_INDENT << "Directory " << arg << ": not found" << endl;
-		return false;
-	}
-	else {
-		return true;
-	}
+	
 	if ((dir = opendir(arg)) == NULL) {
 		cout << OUT_INDENT << "Directory " << arg << ": not found" << endl;
+		free(arg);
 		return false;
 	}
 	else {
-		while((entry = readdir(dir)) != NULL) {
-			if (entry->d_name[0] != '.') {
-				strcpy(path, arg);
+		dir = opendir(arg);
+		if((entry = readdir(dir)) != NULL) {
+			if (arg[0] != '.' && arg[0] != '/') {
+				strcpy(path, get_current_dir_name());
 				strcat(path, "/");
-				strcat(path, entry->d_name);
+				strcat(path, arg);
+				strcat(path, "/");
 			}
-		}
-		
-		cout << OUT_INDENT << get_current_dir_name() << endl;
 
-		closedir(dir);
+			// if directory specified is absolute, starting with "/"
+			else if (arg[0] == '/') {
+				strcat(path, arg);
+				strcat(path, "/");
+			}
+
+			// else not accepted as valid, 
+			else {
+				cout << OUT_INDENT << "Directory " << arg << ": not found" << endl;
+				free(arg);
+				return false;
+			}
+
+			string temp = path;
+			currentdir = temp;
+		}
 	}
+
+	if (arg != NULL)
+		free(arg);	
+	closedir(dir);	
 
 	return true;
 }
@@ -629,6 +676,30 @@ void freeArgs(char** args, int argsn) {
 				delete(args[i]);
 		}
 	}
+}
+
+// Check if help was entered. If so, print command list
+// Input: Command cmd - Command to check if help was input
+// Output: bool - true if help entered
+bool getHelp(Command cmd) {
+	if (cmd.cmdInput == "help") {
+		cout << endl;
+		cout << OUT_INDENT << "The following are valid commands:" << endl;
+
+		for (string s: cmd.KEYWORDS)
+			cout << OUT_INDENT << s << endl;
+
+		cout << endl;
+		return true;
+	}
+
+	return false;
+}
+
+// Print out message at program start
+void introMessage() {
+	cout << "\t\t===== Welcome to my shell =====" << endl;
+	cout << "Type \"help\" to list valid commands\n" << endl;
 }
 
 // Get input from the shell console
